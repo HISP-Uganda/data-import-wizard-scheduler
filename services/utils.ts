@@ -6,19 +6,29 @@ import dhis2 from "./dhis2.json";
 // import { ScheduleEntity } from "./schedule.service";
 
 import {
+	Authentication,
 	CommonIdentifier,
+	GODataTokenGenerationResponse,
+	IGoData,
 	IProgram,
 	IProgramMapping,
 	ISchedule,
 	Mapping,
 	StageMapping,
 	TrackedEntityInstance,
+	convertToDHIS2,
+	convertToGoData,
+	fetchRemote,
+	findUniqAttributes,
+	makeMetadata,
 	makeValidation,
+	postRemote,
 	processPreviousInstances,
 	programStageUniqElements,
 	programUniqAttributes,
 	programUniqColumns,
 } from "data-import-wizard-utils";
+import { chunk } from "lodash/fp";
 
 interface Organisation extends CommonIdentifier {
 	path: string;
@@ -179,11 +189,50 @@ export const syncTrackedEntityInstances = async (
 	}
 };
 
+export const getGoDataToken = async (programMapping: Partial<IProgramMapping>) => {
+	if (programMapping.authentication) {
+		const { params, basicAuth, hasNextLink, headers, password, username, ...rest } =
+			programMapping.authentication;
+
+		const data = await postRemote<GODataTokenGenerationResponse>(rest, "api/users/login", {
+			email: username,
+			password: password,
+		});
+		return data.id;
+	}
+};
+
+export const queryGoData = async <T>(
+	programMapping: Partial<IProgramMapping>,
+	token: string,
+	endpoint: string,
+) => {
+	if (token && programMapping.authentication) {
+		const { params, basicAuth, hasNextLink, headers, password, username, ...rest } =
+			programMapping.authentication;
+
+		let currentAuth: Partial<Authentication> = rest;
+		currentAuth = {
+			...currentAuth,
+			basicAuth: false,
+			params: {
+				...params,
+				auth: {
+					param: "access_token",
+					value: token,
+				},
+			},
+			headers,
+		};
+		return await fetchRemote<T>(currentAuth, endpoint);
+	}
+};
+
 export const processProgramMapping = async (schedule: Partial<ISchedule>) => {
 	const availableLogins = dhis2 as {
 		[key: string]: { username: string; password: string; url: string };
 	};
-	const logins = availableLogins[schedule?.mapping || ""];
+	const logins = availableLogins[schedule?.id || ""];
 	if (logins) {
 		const api = axios.create({
 			baseURL: logins.url,
@@ -192,7 +241,6 @@ export const processProgramMapping = async (schedule: Partial<ISchedule>) => {
 				password: logins.password,
 			},
 		});
-
 		const { data: programMapping } = await api.get<IProgramMapping>(
 			`dataStore/iw-program-mapping/${schedule.mapping}`,
 		);
@@ -217,61 +265,111 @@ export const processProgramMapping = async (schedule: Partial<ISchedule>) => {
 		const uniqueElements = programStageUniqElements(programStageMapping);
 		const uniqColumns = programUniqColumns(attributeMapping);
 
-		// const metadata = makeMetadata(
-		// 	programMapping,
-		// 	[],
-		// 	program,
-		// 	programStageMapping,
-		// 	attributeMapping,
-		// );
+		if (programMapping.isSource) {
+			if (programMapping.dataSource === "dhis2") {
+			} else if (programMapping.dataSource === "godata" && programMapping.remoteProgram) {
+				const token = await getGoDataToken(programMapping);
+				if (token) {
+					let loop = true;
+					let page = 1;
 
-		let params = new URLSearchParams();
-		// metadata.uniqueAttributeValues.forEach(({ attribute, value }) => {
-		// 	params.append("filter", `${attribute}:eq:${value}`);
-		// });
-		params.append("fields", "*");
-		params.append("program", programMapping.program || "");
-		params.append("ouMode", "ALL");
+					const outbreak = await queryGoData<IGoData>(
+						programMapping,
+						token,
+						`api/outbreaks/${programMapping.remoteProgram}`,
+					);
+					const previousData = await queryGoData<IGoData>(
+						programMapping,
+						token,
+						`api/outbreaks/${programMapping.remoteProgram}/cases`,
+					);
+					if (outbreak) {
+						do {
+							let params = new URLSearchParams();
+							params.set("fields", "*");
+							params.set("program", programMapping.program);
+							params.set("ouMode", "ALL");
+							params.set("page", String(page));
+							const { data } = await api.get<{
+								trackedEntityInstances: TrackedEntityInstance[];
+							}>(`trackedEntityInstances.json?${params.toString()}`);
 
-		const {
-			data: { trackedEntityInstances },
-		} = await api.get<{ trackedEntityInstances: TrackedEntityInstance[] }>(
-			`trackedEntityInstances.json?${params.toString()}`,
-		);
+							const converted = convertToGoData(
+								data,
+								organisationUnitMapping,
+								attributeMapping,
+								outbreak,
+							);
+							loop = data.trackedEntityInstances.length === 0;
+							page++;
+						} while (loop);
+					}
+				}
+			} else if (programMapping.dataSource === "api") {
+			}
+		} else {
+			if (programMapping.dataSource === "dhis2") {
+			} else if (programMapping.dataSource === "godata" && programMapping.remoteProgram) {
+				const token = await getGoDataToken(programMapping);
+				if (token) {
+					const goDataData = await queryGoData<any[]>(
+						programMapping,
+						token,
+						`api/outbreaks/${programMapping.remoteProgram}/cases`,
+					);
 
-		const previous = processPreviousInstances(
-			trackedEntityInstances,
-			uniqAttribute,
-			uniqueElements,
-			programMapping.program || "",
-		);
+					if (goDataData) {
+						const uniqueAttributeValues = findUniqAttributes(
+							goDataData,
+							attributeMapping,
+						);
+						let foundInstances: Array<TrackedEntityInstance> = [];
 
-		// const {
-		// 	enrollments,
-		// 	events,
-		// 	trackedEntityInstances: processedInstances,
-		// } = await processData(
-		// 	previous,
-		// 	[],
-		// 	programMapping,
-		// 	organisationUnitMapping,
-		// 	attributeMapping,
-		// 	programStageMapping,
-		// 	uniqAttribute,
-		// 	uniqueElements,
-		// 	uniqColumns,
-		// 	2,
-		// 	program,
-		// 	elements,
-		// 	attributes,
-		// );
+						for (const attributeValues of chunk(50, uniqueAttributeValues)) {
+							let params = new URLSearchParams();
+							Object.entries(groupBy(attributeValues, "attribute")).forEach(
+								([attribute, values]) => {
+									params.append(
+										"filter",
+										`${attribute}:in:${values
+											.map(({ value }) => value)
+											.join(";")}`,
+									);
+								},
+							);
+							params.append("fields", "*");
+							params.append("program", programMapping.program);
+							params.append("ouMode", "ALL");
+							const {
+								data: { trackedEntityInstances },
+							} = await api.get<{ trackedEntityInstances: TrackedEntityInstance[] }>(
+								`trackedEntityInstances.json?${params.toString()}`,
+							);
+							foundInstances = [...foundInstances, ...trackedEntityInstances];
+						}
 
-		console.log(
-			program,
-			programMapping,
-			attributeMapping,
-			// stageMapping,
-			// organisationMapping,
-		);
+						const previous = processPreviousInstances(
+							foundInstances,
+							uniqAttribute,
+							uniqueElements,
+							programMapping.program,
+						);
+						const data = await convertToDHIS2(
+							previous,
+							goDataData,
+							programMapping,
+							organisationUnitMapping,
+							attributeMapping,
+							programStageMapping,
+							1,
+							program,
+							elements,
+							attributes,
+						);
+					}
+				}
+			} else if (programMapping.dataSource === "api") {
+			}
+		}
 	}
 };

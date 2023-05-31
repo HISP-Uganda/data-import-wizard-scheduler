@@ -3,7 +3,7 @@ import { writeFile } from "fs/promises";
 import type { Context, Service, ServiceSchema } from "moleculer";
 import { scheduleJob, scheduledJobs } from "node-schedule";
 
-import { ISchedule } from "data-import-wizard-utils";
+import { ISchedule, DATE_TIME_FORMAT } from "data-import-wizard-utils";
 import dayjs from "dayjs";
 import { processProgramMapping } from "./utils";
 
@@ -14,8 +14,6 @@ interface ScheduleThis extends Service<ScheduleSettings> {}
 interface Logins {
 	[key: string]: { username: string; password: string; url: string };
 }
-
-const DATE_FORMAT = "YYYY-MM-DD HH:mm:ss";
 
 const write = async (schedule: ISchedule, update: Partial<ISchedule>) => {
 	let schedules = (await import("./schedules.json")).default;
@@ -63,14 +61,14 @@ const createSchedule = async (schedule: ISchedule) => {
 		const job = scheduledJobs[schedule.id];
 		await updateDHIS2(schedule, {
 			status: "running",
-			nextRun: dayjs(job.nextInvocation()).format(DATE_FORMAT),
-			lastRun: dayjs(fireDate).format(DATE_FORMAT),
+			nextRun: dayjs(job.nextInvocation()).format(DATE_TIME_FORMAT),
+			lastRun: dayjs(fireDate).format(DATE_TIME_FORMAT),
 		});
 		await processProgramMapping(schedule);
 		await updateDHIS2(schedule, {
 			status: "scheduled",
-			nextRun: dayjs(job.nextInvocation()).format(DATE_FORMAT),
-			lastRun: dayjs(fireDate).format(DATE_FORMAT),
+			nextRun: dayjs(job.nextInvocation()).format(DATE_TIME_FORMAT),
+			lastRun: dayjs(fireDate).format(DATE_TIME_FORMAT),
 		});
 	});
 };
@@ -96,18 +94,20 @@ const ScheduleService: ServiceSchema<ScheduleSettings> = {
 		schedule: {
 			rest: {
 				method: "POST",
-				path: "/",
+				path: "/start",
 			},
 			async handler(this: ScheduleThis, ctx: Context<ISchedule>) {
 				if (ctx.params.id && ctx.params.schedule) {
 					const job = await createSchedule(ctx.params);
 					await updateDHIS2(ctx.params, {
-						nextRun: dayjs(job.nextInvocation()).format(DATE_FORMAT),
+						nextRun: dayjs(job.nextInvocation()).format(DATE_TIME_FORMAT),
+						status: "scheduled",
 					});
 					await write(ctx.params, {
 						status: "scheduled",
-						nextRun: dayjs(job.nextInvocation()).format(DATE_FORMAT),
+						nextRun: dayjs(job.nextInvocation()).format(DATE_TIME_FORMAT),
 					});
+					return { message: "Job scheduled successfully" };
 				}
 				return { message: "Could not schedule with missing id field" };
 			},
@@ -119,7 +119,7 @@ const ScheduleService: ServiceSchema<ScheduleSettings> = {
 			},
 			async handler(this: ScheduleThis, ctx: Context<{ id: string }>) {
 				if (ctx.params.id) {
-					const job = scheduledJobs[ctx.id];
+					const job = scheduledJobs[ctx.params.id];
 					if (job) {
 						const schedules = (await import("./schedules.json")).default;
 						const schedule = schedules.find(({ id }) => id === ctx.params.id);
@@ -132,7 +132,12 @@ const ScheduleService: ServiceSchema<ScheduleSettings> = {
 								status: "stopped",
 							});
 							job.cancel();
+							return { message: "Job canceled successfully" };
+						} else {
+							return { message: "Schedule could not be found" };
 						}
+					} else {
+						return { message: "Scheduled Job not found" };
 					}
 				}
 				return { message: "Could not schedule with missing id field" };
@@ -161,9 +166,6 @@ const ScheduleService: ServiceSchema<ScheduleSettings> = {
 		for (const schedule of schedules) {
 			if (schedule.status !== "stopped") {
 				await createSchedule(schedule as ISchedule);
-			} else {
-				const job = await createSchedule(schedule as ISchedule);
-				console.log("Are we here");
 			}
 		}
 	},
