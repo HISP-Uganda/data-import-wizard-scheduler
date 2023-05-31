@@ -1,6 +1,4 @@
-import axios from "axios";
 import type { Context, Service, ServiceSchema } from "moleculer";
-import { scheduleJob } from "node-schedule";
 export interface ActionHelloParams {
 	name: string;
 }
@@ -18,15 +16,6 @@ interface GreeterLocalVars {
 }
 
 type GreeterThis = Service<GreeterSettings> & GreeterMethods & GreeterLocalVars;
-
-interface Schedule {
-	mapping: string;
-	dhis2URL: string;
-	type: string;
-	username: string;
-	password: string;
-	authenticationType: "basic" | "access_token";
-}
 
 const GreeterService: ServiceSchema<GreeterSettings> = {
 	name: "greeter",

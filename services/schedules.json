@@ -1,0 +1,14 @@
+[
+  {
+    "id": "gPLmfG29WAf",
+    "createdAt": "2023-05-30T15:03:54",
+    "type": "program",
+    "schedule": "* * * * *",
+    "name": "AAA",
+    "description": "BBB",
+    "schedulingSeverURL": "http://localhost:3001/api/schedules",
+    "status": "stopped",
+    "mapping": "c7iySwa1zzx",
+    "updatedAt": "2023-05-30 15:04:34"
+  }
+]

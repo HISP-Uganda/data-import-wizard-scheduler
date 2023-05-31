@@ -63,3 +63,4 @@ jspm_packages/
 # Don't track transpiled files
 dist/
 data/
+dhis2.json

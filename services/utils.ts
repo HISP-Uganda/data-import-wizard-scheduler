@@ -1,23 +1,23 @@
 import axios, { AxiosInstance } from "axios";
-import uniq from "lodash/uniq";
 import fromPairs from "lodash/fromPairs";
 import groupBy from "lodash/groupBy";
-import { ScheduleEntity } from "./schedule.service";
-import { scheduleJob } from "node-schedule";
+import uniq from "lodash/uniq";
+import dhis2 from "./dhis2.json";
+// import { ScheduleEntity } from "./schedule.service";
 
 import {
-	makeMetadata,
+	CommonIdentifier,
+	IProgram,
+	IProgramMapping,
+	ISchedule,
+	Mapping,
+	StageMapping,
+	TrackedEntityInstance,
 	makeValidation,
 	processPreviousInstances,
 	programStageUniqElements,
 	programUniqAttributes,
 	programUniqColumns,
-	CommonIdentifier,
-	IProgram,
-	IProgramMapping,
-	Mapping,
-	StageMapping,
-	TrackedEntityInstance,
 } from "data-import-wizard-utils";
 
 interface Organisation extends CommonIdentifier {
@@ -169,104 +169,109 @@ export const syncTrackedEntityInstances = async (
 				sampleType: labRequests["PaCUNfho8eD"] || "",
 				testType: labRequests["Iwiv0W39Yqq"] || "",
 			};
-			console.log(results);
-			// try {
-			// 	const response = await remoteApi.post("", results);
-			// 	console.log("info", JSON.stringify(response.data));
-			// } catch (error) {
-			// 	console.log("error", error.message);
-			// }
+			try {
+				const response = await remoteApi.post("", results);
+				console.log("info", JSON.stringify(response.data));
+			} catch (error) {
+				console.log("error", error.message);
+			}
 		});
 	}
 };
 
-export const processProgramMapping = async (m: ScheduleEntity) => {
-	const api = axios.create({
-		baseURL: "http://localhost:8080/api/",
-		auth: {
-			username: "admin",
-			password: "district",
-		},
-	});
+export const processProgramMapping = async (schedule: Partial<ISchedule>) => {
+	const availableLogins = dhis2 as {
+		[key: string]: { username: string; password: string; url: string };
+	};
+	const logins = availableLogins[schedule?.mapping || ""];
+	if (logins) {
+		const api = axios.create({
+			baseURL: logins.url,
+			auth: {
+				username: logins.username,
+				password: logins.password,
+			},
+		});
 
-	const { data: programMapping } = await api.get<IProgramMapping>(
-		`dataStore/iw-program-mapping/${m.mapping}`,
-	);
-	const { data: attributeMapping } = await api.get<Mapping>(
-		`dataStore/iw-attribute-mapping/${m.mapping}`,
-	);
-	const { data: programStageMapping } = await api.get<StageMapping>(
-		`dataStore/iw-stage-mapping/${m.mapping}`,
-	);
-	const { data: organisationUnitMapping } = await api.get<StageMapping>(
-		`dataStore/iw-ou-mapping/${m.mapping}`,
-	);
-	const { data: program } = await api.get<IProgram>(`programs/${programMapping.program}`, {
-		params: new URLSearchParams({
-			fields: "trackedEntityType,organisationUnits[id,code,name],programStages[id,repeatable,name,code,programStageDataElements[id,compulsory,name,dataElement[id,name,code]]],programTrackedEntityAttributes[id,mandatory,sortOrder,allowFutureDate,trackedEntityAttribute[id,name,code,unique,generated,pattern,confidential,valueType,optionSetValue,displayFormName,optionSet[id,name,options[id,name,code]]]]",
-		}),
-	});
+		const { data: programMapping } = await api.get<IProgramMapping>(
+			`dataStore/iw-program-mapping/${schedule.mapping}`,
+		);
+		const { data: attributeMapping } = await api.get<Mapping>(
+			`dataStore/iw-attribute-mapping/${schedule.mapping}`,
+		);
+		const { data: programStageMapping } = await api.get<StageMapping>(
+			`dataStore/iw-stage-mapping/${schedule.mapping}`,
+		);
+		const { data: organisationUnitMapping } = await api.get<StageMapping>(
+			`dataStore/iw-ou-mapping/${schedule.mapping}`,
+		);
+		const { data: program } = await api.get<IProgram>(`programs/${programMapping.program}`, {
+			params: new URLSearchParams({
+				fields: "trackedEntityType,organisationUnits[id,code,name],programStages[id,repeatable,name,code,programStageDataElements[id,compulsory,name,dataElement[id,name,code]]],programTrackedEntityAttributes[id,mandatory,sortOrder,allowFutureDate,trackedEntityAttribute[id,name,code,unique,generated,pattern,confidential,valueType,optionSetValue,displayFormName,optionSet[id,name,options[id,name,code]]]]",
+			}),
+		});
 
-	const { attributes, elements } = makeValidation(program);
+		const { attributes, elements } = makeValidation(program);
 
-	const uniqAttribute = programUniqAttributes(attributeMapping);
-	const uniqueElements = programStageUniqElements(programStageMapping);
-	const uniqColumns = programUniqColumns(attributeMapping);
+		const uniqAttribute = programUniqAttributes(attributeMapping);
+		const uniqueElements = programStageUniqElements(programStageMapping);
+		const uniqColumns = programUniqColumns(attributeMapping);
 
-	// const metadata = makeMetadata(
-	// 	programMapping,
-	// 	[],
-	// 	program,
-	// 	programStageMapping,
-	// 	attributeMapping,
-	// );
+		// const metadata = makeMetadata(
+		// 	programMapping,
+		// 	[],
+		// 	program,
+		// 	programStageMapping,
+		// 	attributeMapping,
+		// );
 
-	let params = new URLSearchParams();
-	// metadata.uniqueAttributeValues.forEach(({ attribute, value }) => {
-	// 	params.append("filter", `${attribute}:eq:${value}`);
-	// });
-	params.append("fields", "*");
-	params.append("program", programMapping.program || "");
-	params.append("ouMode", "ALL");
+		let params = new URLSearchParams();
+		// metadata.uniqueAttributeValues.forEach(({ attribute, value }) => {
+		// 	params.append("filter", `${attribute}:eq:${value}`);
+		// });
+		params.append("fields", "*");
+		params.append("program", programMapping.program || "");
+		params.append("ouMode", "ALL");
 
-	const {
-		data: { trackedEntityInstances },
-	} = await api.get<{ trackedEntityInstances: TrackedEntityInstance[] }>(
-		`trackedEntityInstances.json?${params.toString()}`,
-	);
+		const {
+			data: { trackedEntityInstances },
+		} = await api.get<{ trackedEntityInstances: TrackedEntityInstance[] }>(
+			`trackedEntityInstances.json?${params.toString()}`,
+		);
 
-	const previous = processPreviousInstances(
-		trackedEntityInstances,
-		uniqAttribute,
-		uniqueElements,
-		programMapping.program || "",
-	);
+		const previous = processPreviousInstances(
+			trackedEntityInstances,
+			uniqAttribute,
+			uniqueElements,
+			programMapping.program || "",
+		);
 
-	// const {
-	// 	enrollments,
-	// 	events,
-	// 	trackedEntityInstances: processedInstances,
-	// } = await processData(
-	// 	previous,
-	// 	[],
-	// 	programMapping,
-	// 	organisationUnitMapping,
-	// 	attributeMapping,
-	// 	programStageMapping,
-	// 	uniqAttribute,
-	// 	uniqueElements,
-	// 	uniqColumns,
-	// 	2,
-	// 	program,
-	// 	elements,
-	// 	attributes,
-	// );
+		// const {
+		// 	enrollments,
+		// 	events,
+		// 	trackedEntityInstances: processedInstances,
+		// } = await processData(
+		// 	previous,
+		// 	[],
+		// 	programMapping,
+		// 	organisationUnitMapping,
+		// 	attributeMapping,
+		// 	programStageMapping,
+		// 	uniqAttribute,
+		// 	uniqueElements,
+		// 	uniqColumns,
+		// 	2,
+		// 	program,
+		// 	elements,
+		// 	attributes,
+		// );
 
-	console.log(
-		program,
-		programMapping,
-		attributeMapping,
-		// stageMapping,
-		// organisationMapping,
-	);
+		console.log(
+			program,
+			programMapping,
+			attributeMapping,
+			// stageMapping,
+			// organisationMapping,
+		);
+	}
 };
